@@ -67,15 +67,23 @@ export const SpeechRecorder = ({
       if (!event.data.size || !currentTask) return;
 
       chunksRef.current.push(event.data);
-      const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+      const blob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || "audio/webm" });
       const durationMs = elapsedMs;
 
       try {
-        await onUpload({
-          taskId: currentTask.id,
-          blob,
-          durationMs,
-        });
+        // retry up to 2 times on transient failures
+        let lastErr: unknown = undefined;
+        for (let i = 0; i < 3; i++) {
+          try {
+            await onUpload({ taskId: currentTask.id, blob, durationMs });
+            lastErr = undefined;
+            break;
+          } catch (e) {
+            lastErr = e;
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+        if (lastErr) throw lastErr;
         chunksRef.current = [];
 
         if (currentIndex < tasks.length - 1) {
@@ -98,9 +106,15 @@ export const SpeechRecorder = ({
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, {
-        mimeType: "audio/webm",
-      });
+      // pick a supported mime type for best compatibility
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = candidates.find((t) => (window as any).MediaRecorder?.isTypeSupported?.(t)) || candidates[0];
+
+      const recorder = new MediaRecorder(stream, { mimeType });
 
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
@@ -124,7 +138,8 @@ export const SpeechRecorder = ({
         stopTimer();
       });
 
-      recorder.start();
+      // use a timeslice so dataavailable fires consistently
+      recorder.start(1000);
 
       if (currentTask.maxDurationMs) {
         setTimeout(() => {
@@ -145,6 +160,8 @@ export const SpeechRecorder = ({
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === "recording") {
+      // Ask for the final data chunk before stopping
+      try { (recorder as any).requestData?.(); } catch {}
       recorder.stop();
     }
   };
