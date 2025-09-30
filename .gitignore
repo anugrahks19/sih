@@ -25,21 +25,21 @@ dist-ssr
 # Frontend
 node_modules/
 dist/
-src/.env
+# src/.env
 .env
 
 # Backend
-backend/.env
-backend/.venv/
+# backend/.env
+# backend/.venv/
 __pycache__/
 *.pyc
 *.log
 
 # App data / generated files
-speech_uploads/
-uploads/
-tmp/
-.cache/
+# speech_uploads/
+# uploads/
+# tmp/
+# .cache/
 
 # Models (commit only if intentionally small/public)
 backend/model.pkl
