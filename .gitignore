@@ -43,8 +43,7 @@ tmp/
 
 # Models (commit only if intentionally small/public)
 backend/model.pkl
-models/
-artifacts/
+!backend/app/models/**
 
 # OS/editor noise
 .DS_Store
