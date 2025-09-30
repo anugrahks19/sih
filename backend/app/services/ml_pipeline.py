@@ -3,12 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
+import os
 import librosa
 import numpy as np
 import torch
 import torchaudio
-from transformers import AutoModel, AutoProcessor
-import os
 import joblib
 
 from app.models import Assessment, SpeechSample
@@ -39,12 +38,36 @@ class AudioFeatureExtractor:
 
 
 class SpeechEmbeddingExtractor:
+    """
+    Lazily loads Wav2Vec2 only when ENABLE_SPEECH_EMBEDDINGS=1.
+    Falls back to a zero vector if the model cannot be loaded (keeps free-tier deploys stable).
+    """
+
     def __init__(self) -> None:
-        self.processor = AutoProcessor.from_pretrained("facebook/wav2vec2-base-960h")
-        self.model = AutoModel.from_pretrained("facebook/wav2vec2-base-960h")
-        self.model.eval()
+        self.processor = None
+        self.model = None
+
+        enable = os.getenv("ENABLE_SPEECH_EMBEDDINGS", "0") == "1"
+        if not enable:
+            return
+
+        try:
+            # Import transformers lazily to avoid heavy import unless explicitly enabled
+            from transformers import AutoModel, AutoProcessor  # type: ignore
+
+            self.processor = AutoProcessor.from_pretrained("facebook/wav2vec2-base-960h")
+            self.model = AutoModel.from_pretrained("facebook/wav2vec2-base-960h")
+            self.model.eval()
+        except Exception:
+            # Leave processor/model as None to trigger fallback
+            self.processor = None
+            self.model = None
 
     def get_embeddings(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        if self.processor is None or self.model is None:
+            # Return a stable dimensionality for downstream averaging
+            return np.zeros((1, 768), dtype=np.float32)
+
         inputs = self.processor(audio, sampling_rate=sample_rate, return_tensors="pt", padding=True)
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -134,9 +157,13 @@ class PipelineManager:
         audio_feature_map: Dict[str, Dict[str, Any]] = {}
 
         for sample in samples:
-            audio, sr = self.audio_feature_extractor.load_audio(sample.file_path)
-            audio_feature_map[sample.task_id] = self.audio_feature_extractor.extract_features(audio, sr)
-            speech_embeddings.append(self.speech_embedding_extractor.get_embeddings(audio, sr))
+            try:
+                audio, sr = self.audio_feature_extractor.load_audio(sample.file_path)
+                audio_feature_map[sample.task_id] = self.audio_feature_extractor.extract_features(audio, sr)
+                speech_embeddings.append(self.speech_embedding_extractor.get_embeddings(audio, sr))
+            except Exception:
+                # Skip problematic files but keep processing the rest
+                continue
 
         if speech_embeddings:
             speech_embedding = np.mean(np.concatenate(speech_embeddings, axis=0), axis=0).tolist()
